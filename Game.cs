@@ -25,6 +25,13 @@ public class Game : GameWindow
     private int _selected;            // indexul obiectului selectat în _scene (tasta Tab)
     private bool _wireframe;          // contur (true) sau plin (false)
 
+    // T4: pivotul rotației (null = nu a fost ales niciunul)
+    private Vector2? _pivot = null;
+
+    // T5: satelitul (nu este în _scene, deci Tab nu îl selectează) și unghiul orbitei, în grade
+    private SceneObject _satellite = null!;
+    private float _orbitAngle = 0.0f;
+
     // Contoare afișate în titlul ferestrei.
     private readonly string _baseTitle;
     private double _secondTimer;
@@ -69,6 +76,12 @@ public class Game : GameWindow
                   new Transform2D { Position = new Vector2(2.0f, 1.0f) });
         AddObject("cerc", Shapes.RegularPolygon(64, 0.5f),
                   new Transform2D { Position = new Vector2(0.8f, -0.6f), Depth = 2.0f });
+
+        // T5: satelitul. Transformarea lui se calculează la desenare, din obiectul selectat.
+        _satellite = new SceneObject("satelit", Shapes.Triangle(), new Transform2D())
+        {
+            Tint = new Color4(1.0f, 0.85f, 0.3f, 1.0f)
+        };
     }
 
     /// <summary>Adaugă un obiect în scenă și reține transformarea lui inițială (pentru tasta R).</summary>
@@ -102,18 +115,33 @@ public class Game : GameWindow
         float dt = (float)args.Time;
         SceneObject sel = _scene[_selected];
 
-        const float moveSpeed = 2.0f;   // unități de lume pe secundă
-        if (KeyboardState.IsKeyDown(Keys.Left))  sel.Transform.Position.X -= moveSpeed * dt;
-        if (KeyboardState.IsKeyDown(Keys.Right)) sel.Transform.Position.X += moveSpeed * dt;
-        if (KeyboardState.IsKeyDown(Keys.Down))  sel.Transform.Position.Y -= moveSpeed * dt;
-        if (KeyboardState.IsKeyDown(Keys.Up))    sel.Transform.Position.Y += moveSpeed * dt;
+        // T2: Shift ținut apăsat => toate mișcările obiectului (săgeți, rotație, scalare) de 3 ori mai rapide
+        float k = KeyboardState.IsKeyDown(Keys.LeftShift) ? 3.0f : 1.0f;
 
-        // TODO (T2): Q / E rotesc obiectul, Z / X îl scalează
+        // translația (săgeți)
+        float move = 2.0f * k * dt;   // unități de lume pe secundă
+        if (KeyboardState.IsKeyDown(Keys.Left)) sel.Transform.Position.X -= move;
+        if (KeyboardState.IsKeyDown(Keys.Right)) sel.Transform.Position.X += move;
+        if (KeyboardState.IsKeyDown(Keys.Down)) sel.Transform.Position.Y -= move;
+        if (KeyboardState.IsKeyDown(Keys.Up)) sel.Transform.Position.Y += move;
+
+        // T2: rotația, 90 de grade pe secundă. Q = sens trigonometric (+), E = sens orar (-)
+        float rot = 90.0f * k * dt;
+        if (KeyboardState.IsKeyDown(Keys.Q)) sel.Transform.Rotation += rot;
+        if (KeyboardState.IsKeyDown(Keys.E)) sel.Transform.Rotation -= rot;
+
+        // T2: scalarea uniformă, factor 1,5 pe secundă. Z = micșorează, X = mărește.
+        // T2: scalarea se face prin ÎNMULȚIRE, nu prin adunare: o scădere prin adunare ar ajunge la 0
+        // și apoi la valori negative, care oglindesc forma. Prin înmulțire scara se apropie de 0 fără
+        // să-l atingă, iar mărirea și micșorarea sunt simetrice (Pow(f, dt) = f pe secundă, indiferent de FPS).
+        float f = MathF.Pow(1.5f, k * dt);
+        if (KeyboardState.IsKeyDown(Keys.Z)) sel.Transform.ScaleBy(1.0f / f);
+        if (KeyboardState.IsKeyDown(Keys.X)) sel.Transform.ScaleBy(f);
 
         if (KeyboardState.IsKeyPressed(Keys.Tab)) _selected = (_selected + 1) % _scene.Count;
-        if (KeyboardState.IsKeyPressed(Keys.O))   _camera.IsPerspective = !_camera.IsPerspective;
-        if (KeyboardState.IsKeyPressed(Keys.F))   _wireframe = !_wireframe;
-        if (KeyboardState.IsKeyPressed(Keys.R))   ResetScene();
+        if (KeyboardState.IsKeyPressed(Keys.O)) _camera.IsPerspective = !_camera.IsPerspective;
+        if (KeyboardState.IsKeyPressed(Keys.F)) _wireframe = !_wireframe;
+        if (KeyboardState.IsKeyPressed(Keys.R)) ResetScene();
 
         if (KeyboardState.IsKeyPressed(Keys.Tab) || KeyboardState.IsKeyPressed(Keys.O) ||
             KeyboardState.IsKeyPressed(Keys.R))
@@ -123,10 +151,23 @@ public class Game : GameWindow
 
         // --- Obiectul selectat: mouse-ul (secțiunea 9) -------------------------------
 
-        // TODO (T3): la clic stânga, obiectul selectat se mută în punctul din lume aflat sub cursor
-        //            (folosiți ScreenToWorld; Depth nu se schimbă)
+        // Obiectul selectat poate să se fi schimbat prin Tab sau R în același cadru.
+        sel = _scene[_selected];
 
-        // TODO (T4, facultativ): clic dreapta = pivot; tasta P ținută = rotație în jurul pivotului
+        // T3: clic stânga mută obiectul selectat în punctul din lume aflat sub cursor (Depth nu se schimbă)
+        if (MouseState.IsButtonPressed(MouseButton.Left))
+            sel.Transform.Position = ScreenToWorld(MouseState.Position);
+
+        // T4: clic dreapta stabilește pivotul în punctul din lume aflat sub cursor
+        if (MouseState.IsButtonPressed(MouseButton.Right))
+            _pivot = ScreenToWorld(MouseState.Position);
+
+        // T4: cât timp P este ținută apăsată, obiectul se rotește în jurul pivotului, 90 de grade pe secundă
+        if (KeyboardState.IsKeyDown(Keys.P) && _pivot.HasValue)
+            sel.Transform.RotateAround(_pivot.Value, 90.0f * dt);
+
+        // T5: o rotație completă a orbitei la 4 secunde = 90 de grade pe secundă
+        _orbitAngle = (_orbitAngle + 90.0f * dt) % 360.0f;
 
         // --- Camera: tastatura și rotița (secțiunea 6.2) -----------------------------
 
@@ -184,7 +225,20 @@ public class Game : GameWindow
             obj.Mesh.Draw();
         }
 
-        // TODO (T5, facultativ): satelitul obiectului selectat
+        // T5: satelitul obiectului selectat. Transformarea locală (scalare 0,3, translație (1,2; 0),
+        // apoi rotație cu unghiul orbitei) se înmulțește cu matricea model a obiectului selectat
+        // (în C#: copil * părinte), deci satelitul îl urmează când acesta este mutat, rotit sau scalat.
+        // T5: când obiectul selectat este scalat, orbita se scalează odată cu el (raza 1,2 devine
+        // 1,2 * scara obiectului, iar satelitul se mărește proporțional), pentru că matricea satelitului
+        // include matricea model a părintelui, deci moștenește și scalarea lui, nu doar poziția și rotația.
+        Matrix4 local = Matrix4.CreateScale(0.3f, 0.3f, 1.0f)
+                      * Matrix4.CreateTranslation(1.2f, 0.0f, 0.0f)
+                      * Matrix4.CreateRotationZ(MathHelper.DegreesToRadians(_orbitAngle));
+        Matrix4 satelliteModel = local * _scene[_selected].Transform.ModelMatrix;
+
+        _shader.SetMatrix4("uModel", satelliteModel);
+        _shader.SetColor("uTint", _satellite.Tint);
+        _satellite.Mesh.Draw();
 
         // 5. Afișăm cadrul terminat: back buffer <-> front buffer.
         SwapBuffers();
@@ -197,6 +251,7 @@ public class Game : GameWindow
         {
             obj.Dispose();
         }
+        _satellite.Dispose();
         _shader.Dispose();
 
         base.OnUnload();
@@ -205,8 +260,17 @@ public class Game : GameWindow
     /// <summary>Transformă poziția mouse-ului (pixeli, origine stânga-sus) în coordonate de lume.</summary>
     private Vector2 ScreenToWorld(Vector2 mousePixels)
     {
-        // TODO (T3): pasul 1 (pixel → NDC), apoi pasul 2 (NDC → lume, cu inversa lui view * projection)
-        return Vector2.Zero;
+        // T3, pasul 1: pixel -> NDC.
+        // T3: axa Y a mouse-ului are originea sus-stânga și crește în jos, iar în NDC și în lume Y crește
+        // în sus; de aceea y_ndc = 1 - 2 * y / H (semnul minus întoarce axa).
+        float xNdc = 2.0f * mousePixels.X / ClientSize.X - 1.0f;
+        float yNdc = 1.0f - 2.0f * mousePixels.Y / ClientSize.Y;
+
+        // T3, pasul 2: NDC -> lume, cu inversa lui view * projection (recalculată la fiecare apel,
+        // ca să țină cont de mutarea camerei, de zoom și de redimensionarea ferestrei).
+        Matrix4 inverse = (_camera.ViewMatrix * _camera.ProjectionMatrix).Inverted();
+        Vector4 world = new Vector4(xNdc, yNdc, 0.0f, 1.0f) * inverse;   // OpenTK: vector linie, în stânga
+        return new Vector2(world.X, world.Y);
     }
 
     /// <summary>Tasta R: obiectele revin la transformările inițiale, camera la starea inițială.</summary>
@@ -217,6 +281,7 @@ public class Game : GameWindow
             _scene[i].Transform = _initialTransforms[i].Clone();
         }
         _camera.Reset();
+        _pivot = null;
     }
 
     /// <summary>

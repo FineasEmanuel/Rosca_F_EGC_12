@@ -9,7 +9,7 @@ namespace Egc;
 public class Camera
 {
     // --- View (secțiunea 6) ---------------------------------------------------
-
+    
     public Vector2 Position = Vector2.Zero;   // punctul din lume aflat în centrul imaginii
     public float Zoom = 1.0f;                 // > 1: obiectele apar mai mari; < 1: mai mici
     public float Distance = 5.0f;             // distanța camerei față de planul scenei (contează în perspectivă)
